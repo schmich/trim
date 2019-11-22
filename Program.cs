@@ -17,6 +17,68 @@ namespace Trim
             return status;
         }
 
+        static int Run(string[] args) {
+            ShowBanner("V I D E O     T R I M M E R");
+            if (args.Length != 1) {
+                Console.WriteLine("Error: Drag a video file onto this program to run.");
+                return 1;
+            }
+
+            string inputFilename = Path.GetFullPath(args[0]);
+            if (!File.Exists(inputFilename)) {
+                Console.WriteLine($"Error: File does not exist at {inputFilename}.");
+                return 1;
+            }
+
+            string ffmpegFilename = Path.GetTempFileName();
+            try {
+                string name = Path.GetFileNameWithoutExtension(inputFilename);
+                Console.WriteLine($"Loading \"{name}\"");
+
+                ExtractFFmpeg(ffmpegFilename);
+                int? length = VideoLength(ffmpegFilename, inputFilename);
+
+                string extension = Path.GetExtension(inputFilename);
+                string outputFilename = Path.ChangeExtension(inputFilename, $"TRIMMED{extension}");
+
+                Console.WriteLine("\nTime format: hh:mm:ss");
+                Console.WriteLine("\nExamples:");
+                Console.WriteLine("             45 seconds  00:00:45");
+                Console.WriteLine("              2 minutes  00:02:00");
+                Console.WriteLine("    9 minutes 5 seconds  00:09:05");
+                Console.WriteLine("      1 hour 15 minutes  01:15:00");
+
+                string prompt = "What time should the trimmed video start";
+                if (length.HasValue) {
+                    prompt += $" (00:00:00 - {ToTimestamp(length.Value - 1)})";
+                }
+
+                int start = ReadSeconds($"\n{prompt}? ");
+                int end;
+                while (true) {
+                    prompt = "What time should the trimmed video end";
+                    if (length.HasValue) {
+                        prompt += $" ({ToTimestamp(start + 1)} - {ToTimestamp(length.Value)})";
+                    }
+
+                    end = ReadSeconds($"\n{prompt}? ");
+                    if (start < end) {
+                        break;
+                    }
+
+                    Console.WriteLine($"End time must be after start time ({ToTimestamp(start)}).");
+                }
+
+                Console.WriteLine("\nTrimming video.");
+
+                TrimVideo(ffmpegFilename, inputFilename, outputFilename, ToTimestamp(start), ToTimestamp(end));
+            } finally {
+                File.Delete(ffmpegFilename);
+            }
+
+            return 0;
+        }
+
         static void ExtractFFmpeg(string outputFilename) {
             var assembly = Assembly.GetExecutingAssembly();
 
@@ -40,59 +102,7 @@ namespace Trim
             }
         }
 
-        static int Run(string[] args) {
-            ShowBanner("V I D E O     T R I M M E R");
-            if (args.Length != 1) {
-                Console.WriteLine("Error: Drag a video file onto this program to run.");
-                return 1;
-            }
-
-            string inputFilename = Path.GetFullPath(args[0]);
-            if (!File.Exists(inputFilename)) {
-                Console.WriteLine($"Error: File does not exist at {inputFilename}.");
-                return 1;
-            }
-
-            string name = Path.GetFileNameWithoutExtension(inputFilename);
-            Console.WriteLine($"Trimming \"{name}\"");
-
-            string extension = Path.GetExtension(inputFilename);
-            string outputFilename = Path.ChangeExtension(inputFilename, $"TRIMMED{extension}");
-
-            Console.WriteLine("\nTime format: hh:mm:ss");
-            Console.WriteLine("\nExamples:");
-            Console.WriteLine("             45 seconds  00:00:45");
-            Console.WriteLine("              2 minutes  00:02:00");
-            Console.WriteLine("    9 minutes 5 seconds  00:09:05");
-            Console.WriteLine("      1 hour 15 minutes  01:15:00");
-
-            int start = ReadSeconds("\nWhat time should the trimmed video start? ");
-            string startTimestamp = ToTimestamp(start);
-
-            int end;
-            while (true) {
-                end = ReadSeconds("\nWhat time should trimmed video end? ");
-                if (start < end) {
-                    break;
-                }
-
-                Console.WriteLine($"End time must be after start time ({startTimestamp}).");
-            }
-
-            Console.WriteLine("\nTrimming video.");
-
-            string ffmpegFilename = Path.GetTempFileName();
-            try {
-                ExtractFFmpeg(ffmpegFilename);
-                TrimVideo(ffmpegFilename, inputFilename, outputFilename, startTimestamp, ToTimestamp(end));
-            } finally {
-                File.Delete(ffmpegFilename);
-            }
-
-            return 0;
-        }
-
-        static void TrimVideo(string ffmpegFilename, string inputFilename, string outputFilename, string startTimestamp, string endTimestamp) {
+        static (int ExitCode, string Stdout, string Stderr) RunFFmpeg(string ffmpegFilename, string[] args) {
             var psi = new ProcessStartInfo {
                 FileName = ffmpegFilename,
                 RedirectStandardInput = true,
@@ -103,9 +113,6 @@ namespace Trim
                 WindowStyle = ProcessWindowStyle.Hidden
             };
 
-            // ffmpeg -y -i in.mp4 -ss hh:mm:ss -to hh:mm:ss -codec copy out.mp4
-            var args = new[] { "-y", "-i", inputFilename, "-ss", startTimestamp, "-to", endTimestamp, "-codec", "copy", outputFilename };
-
             foreach (var arg in args) {
                 psi.ArgumentList.Add(arg);
             }
@@ -115,7 +122,31 @@ namespace Trim
             string stderr = process.StandardError.ReadToEnd();
             process.WaitForExit();
 
-            if (process.ExitCode != 0) {
+            return (process.ExitCode, stdout, stderr);
+        }
+
+        static int? VideoLength(string ffmpegFilename, string inputFilename) {
+            // ffmpeg -i in.mp4
+            var args = new[] { "-i", inputFilename };
+            var (exitCode, stdout, stderr) = RunFFmpeg(ffmpegFilename, args);
+
+            var pattern = new Regex(@"^\s*Duration:\s*(\d+:\d+:\d+)", RegexOptions.Multiline);
+            var match = pattern.Match(stderr);
+            if (!match.Success) {
+                return null;
+            }
+
+            string timestamp = match.Groups[1].Value;
+            int seconds = ToSeconds(timestamp);
+            return seconds + 1;
+        }
+
+        static void TrimVideo(string ffmpegFilename, string inputFilename, string outputFilename, string startTimestamp, string endTimestamp) {
+            // ffmpeg -y -loglevel error -stats -i in.mp4 -ss hh:mm:ss -to hh:mm:ss -codec copy out.mp4
+            var args = new[] { "-y", "-loglevel", "error", "-stats", "-i", inputFilename, "-ss", startTimestamp, "-to", endTimestamp, "-codec", "copy", outputFilename };
+            var (exitCode, stdout, stderr) = RunFFmpeg(ffmpegFilename, args);
+
+            if (exitCode != 0) {
                 Console.WriteLine(stderr);
                 Console.WriteLine("Trimming error. See output above.");
             } else {
