@@ -130,10 +130,6 @@ namespace Trim
             var args = new[] { "-i", inputFilename };
             var (exitCode, stdout, stderr) = RunFFmpeg(ffmpegFilename, args);
 
-            if (exitCode != 0) {
-                return null;
-            }
-
             var pattern = new Regex(@"^\s*Duration:\s*(\d+:\d+:\d+)", RegexOptions.Multiline);
             var match = pattern.Match(stderr);
             if (!match.Success) {
@@ -142,6 +138,10 @@ namespace Trim
 
             string timestamp = match.Groups[1].Value;
             int seconds = ToSeconds(timestamp);
+            if (seconds == 0) {
+                return null;
+            }
+
             return seconds + 1;
         }
 
