@@ -33,7 +33,7 @@ namespace Trim
             string ffmpegFilename = Path.GetTempFileName();
             try {
                 string name = Path.GetFileNameWithoutExtension(inputFilename);
-                Console.WriteLine($"Loading \"{name}\"");
+                Console.WriteLine($"Loading video \"{name}\"");
 
                 ExtractFFmpeg(ffmpegFilename);
                 int? length = VideoLength(ffmpegFilename, inputFilename);
@@ -129,6 +129,10 @@ namespace Trim
             // ffmpeg -i in.mp4
             var args = new[] { "-i", inputFilename };
             var (exitCode, stdout, stderr) = RunFFmpeg(ffmpegFilename, args);
+
+            if (exitCode != 0) {
+                return null;
+            }
 
             var pattern = new Regex(@"^\s*Duration:\s*(\d+:\d+:\d+)", RegexOptions.Multiline);
             var match = pattern.Match(stderr);
